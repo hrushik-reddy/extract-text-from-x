@@ -1,9 +1,12 @@
+
 import pytesseract
 from PIL import Image
 import PyPDF2
 import fitz  # PyMuPDF
 from docx import Document
+from docx.opc.exceptions import PackageNotFoundError
 import os
+
 
 def extract_text_from_image(image_path):
     """
@@ -55,9 +58,10 @@ def extract_text_from_pdf(pdf_path):
         except Exception as e2:
             raise Exception(f"Error extracting text from PDF: {str(e2)}")
 
+
 def extract_text_from_docx(docx_path):
     """
-    Extract text from DOCX file
+    Extract text from DOCX file with enhanced error handling
     """
     try:
         # Open document
@@ -77,8 +81,14 @@ def extract_text_from_docx(docx_path):
         
         return text.strip()
     
+    except PackageNotFoundError:
+        # Specific handling for corrupted or malformed DOCX files
+        raise ValueError("Error processing file: The DOCX file is corrupted or invalid.")
+    
     except Exception as e:
-        raise Exception(f"Error extracting text from DOCX: {str(e)}")
+        # Generic error handling for other exceptions
+        raise ValueError(f"An unexpected error occurred while processing the DOCX file: {str(e)}")
+
 
 def extract_text_from_txt(txt_path):
     """

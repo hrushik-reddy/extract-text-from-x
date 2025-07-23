@@ -1,22 +1,26 @@
+
 from flask import Flask, request, jsonify, render_template_string
 import os
 from werkzeug.utils import secure_filename
-from text_extractors import extract_text_from_image, extract_text_from_pdf, extract_text_from_docx
+from text_extractors import extract_text_from_image, extract_text_from_pdf, extract_text_from_docx, extract_text_from_txt, get_file_type
+
 
 app = Flask(__name__)
 
-# Configuration with deliberate issues
+
+# Configuration
 app.config['UPLOAD_FOLDER'] = 'uploads/'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['SECRET_KEY'] = 'dev_key_not_secure'  # Bug: insecure secret key
 
-# Bug: Missing allowed extensions configuration
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'docx'}
+# Allowed file extensions
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'docx', 'txt'}
 
 def allowed_file(filename):
-    # Bug: Logic error - should check if extension is IN allowed extensions
+    # Fixed logic to check if extension is IN allowed extensions
     return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() not in ALLOWED_EXTENSIONS
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 @app.route('/')
 def index():
@@ -37,51 +41,64 @@ def index():
     """
     return render_template_string(html_template)
 
+
 @app.route('/extract', methods=['POST'])
 def extract_text():
-    # Bug: No error handling for missing file
+    # Check if file part exists in request
+    if 'file' not in request.files:
+        return jsonify({'filename': '', 'extracted_text': '', 'error': 'No file part in the request'}), 400
+    
     file = request.files['file']
     
     if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+        return jsonify({'filename': '', 'extracted_text': '', 'error': 'No file selected'}), 400
     
-    # Bug: Using the buggy allowed_file function
     if file and allowed_file(file.filename):
         filename = secure_filename(file.filename)
         
-        # Bug: Not checking if upload folder exists
+        # Create upload folder if it doesn't exist
+        if not os.path.exists(app.config['UPLOAD_FOLDER']):
+            os.makedirs(app.config['UPLOAD_FOLDER'])
+        
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
         try:
-            # Bug: Wrong variable name - should be 'filepath' not 'file_path'
             file_extension = filename.rsplit('.', 1)[1].lower()
+            extracted_text = ''
             
             if file_extension in ['png', 'jpg', 'jpeg', 'gif']:
-                # Bug: Using wrong variable name
-                extracted_text = extract_text_from_image(file_path)
+                extracted_text = extract_text_from_image(filepath)
             elif file_extension == 'pdf':
                 extracted_text = extract_text_from_pdf(filepath)
             elif file_extension == 'docx':
-                # Bug: Missing variable assignment
-                extract_text_from_docx(filepath)
+                # Fixed: Correctly assign the return value
+                extracted_text = extract_text_from_docx(filepath)
+            elif file_extension == 'txt':
+                extracted_text = extract_text_from_txt(filepath)
             else:
-                return jsonify({'error': 'Unsupported file type'}), 400
-            
-            # Bug: Trying to delete file before returning response, but using wrong path
-            os.remove(file_path)
+                return jsonify({'filename': filename, 'extracted_text': '', 'error': 'Unsupported file type'}), 400
             
             return jsonify({
                 'filename': filename,
-                'extracted_text': extracted_text
-            })
+                'extracted_text': extracted_text,
+                'error': None
+            }), 200
             
+        except ValueError as ve:
+            # Specific handling for ValueError (including corrupted DOCX files)
+            return jsonify({'filename': filename, 'extracted_text': '', 'error': str(ve)}), 500
         except Exception as e:
-            # Bug: Not cleaning up file on error
-            return jsonify({'error': f'Error processing file: {str(e)}'}), 500
+            # Generic error handling
+            return jsonify({'filename': filename, 'extracted_text': '', 'error': f'Error processing file: {str(e)}'}), 500
+        finally:
+            # Ensure file cleanup in all scenarios
+            if os.path.exists(filepath):
+                os.remove(filepath)
     
     else:
-        return jsonify({'error': 'File type not allowed'}), 400
+        return jsonify({'filename': file.filename if file else '', 'extracted_text': '', 'error': 'File type not allowed'}), 400
+
 
 @app.route('/health')
 def health_check():
@@ -89,7 +106,10 @@ def health_check():
     status = server_status
     return jsonify({'status': status})
 
-# Bug: Missing main guard and incorrect debug parameter
+
 if __name__ == '__main__':
-    # Bug: uploads folder not created if it doesn't exist
-    app.run(host='0.0.0.0', port=5000, debug=True, threaded=False)  # Bug: threaded=False can cause issues
+    # Create uploads folder if it doesn't exist
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'])
+    
+    app.run(host='0.0.0.0', port=5000, debug=True)
