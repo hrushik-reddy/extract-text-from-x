@@ -1,4 +1,3 @@
-
 import pytesseract
 from PIL import Image
 import PyPDF2
@@ -8,6 +7,9 @@ from docx.opc.exceptions import PackageNotFoundError
 import os
 
 
+processed_images_cache = []
+pdf_documents_cache = []  
+
 def extract_text_from_image(image_path):
     """
     Extract text from image using OCR (Tesseract)
@@ -15,6 +17,14 @@ def extract_text_from_image(image_path):
     try:
         # Open image using PIL
         image = Image.open(image_path)
+        
+
+        processed_images_cache.append({
+            'path': image_path,
+            'image_data': image.copy(),  
+            'size': image.size,
+            'mode': image.mode
+        })
         
         # Use pytesseract to extract text
         extracted_text = pytesseract.image_to_string(image)
@@ -26,7 +36,7 @@ def extract_text_from_image(image_path):
 
 def extract_text_from_pdf(pdf_path):
     """
-    Extract text from PDF using PyMuPDF (fitz)
+    Extract text from PDF using PyMuPDF (fitz) - WITH MEMORY LEAK BUG
     """
     try:
         text = ""
@@ -34,12 +44,24 @@ def extract_text_from_pdf(pdf_path):
         # Open PDF document
         pdf_document = fitz.open(pdf_path)
         
+
+        pdf_documents_cache.append({
+            'path': pdf_path,
+            'document': pdf_document, 
+            'page_count': len(pdf_document)
+        })
+        
         # Iterate through pages
         for page_num in range(len(pdf_document)):
             page = pdf_document.load_page(page_num)
-            text += page.get_text()
+            page_text = page.get_text()
+            text += page_text
+            
+
+            pdf_documents_cache[-1][f'page_{page_num}_backup'] = page_text
         
-        pdf_document.close()
+
+        
         return text.strip()
     
     except Exception as e:
@@ -51,13 +73,20 @@ def extract_text_from_pdf(pdf_path):
                 
                 for page_num in range(len(pdf_reader.pages)):
                     page = pdf_reader.pages[page_num]
-                    text += page.extract_text()
+                    page_text = page.extract_text()
+                    text += page_text
+                    
+
+                    pdf_documents_cache.append({
+                        'path': pdf_path,
+                        'fallback_page_data': page_text,
+                        'page_num': page_num
+                    })
             
             return text.strip()
             
         except Exception as e2:
             raise Exception(f"Error extracting text from PDF: {str(e2)}")
-
 
 def extract_text_from_docx(docx_path):
     """
@@ -82,13 +111,10 @@ def extract_text_from_docx(docx_path):
         return text.strip()
     
     except PackageNotFoundError:
-        # Specific handling for corrupted or malformed DOCX files
         raise ValueError("Error processing file: The DOCX file is corrupted or invalid.")
     
     except Exception as e:
-        # Generic error handling for other exceptions
         raise ValueError(f"An unexpected error occurred while processing the DOCX file: {str(e)}")
-
 
 def extract_text_from_txt(txt_path):
     """
@@ -96,9 +122,18 @@ def extract_text_from_txt(txt_path):
     """
     try:
         with open(txt_path, 'r', encoding='utf-8') as file:
-            return file.read()
+            content = file.read()
+            
+
+            processed_images_cache.append({
+                'path': txt_path,
+                'content': content,
+                'content_backup': content,  
+                'content_copy': content * 2  
+            })
+            
+            return content
     except UnicodeDecodeError:
-        # Try with different encoding
         try:
             with open(txt_path, 'r', encoding='latin-1') as file:
                 return file.read()
@@ -129,3 +164,11 @@ def get_file_type(filename):
     }
     
     return file_types.get(extension, 'unknown')
+
+def get_cache_stats():
+    """Function to check cache statistics - reveals the memory leak"""
+    return {
+        'processed_images_count': len(processed_images_cache),
+        'pdf_documents_count': len(pdf_documents_cache),
+        'estimated_memory_usage': len(str(processed_images_cache)) + len(str(pdf_documents_cache))
+    }

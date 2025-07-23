@@ -1,0 +1,526 @@
+Directory structure:
+└── extract-text-from-x/
+    ├── README.md
+    ├── app.py
+    ├── requirements.txt
+    ├── text_extractors.py
+    ├── .appmodconfig
+    └── releasenotes/
+        └── README.md
+
+================================================
+File: README.md
+================================================
+# Extract Text from X
+
+A Flask web application that extracts text from various file formats including images, PDFs, and DOCX files.
+
+## Features
+
+- **Image Text Extraction**: Extract text from images (PNG, JPG, JPEG, GIF) using OCR (Tesseract)
+- **PDF Text Extraction**: Extract text from PDF files using PyMuPDF and PyPDF2 as fallback
+- **DOCX Text Extraction**: Extract text from Microsoft Word documents
+- **Web Interface**: Simple HTML form for file uploads
+- **REST API**: JSON API endpoints for programmatic access
+
+## Installation
+
+### Prerequisites
+
+- Python 3.7+
+- Tesseract OCR engine
+
+#### Install Tesseract OCR
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install tesseract-ocr
+```
+
+**macOS:**
+```bash
+brew install tesseract
+```
+
+**Windows:**
+Download and install from: https://github.com/UB-Mannheim/tesseract/wiki
+
+### Setup
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd extract-text-from-x
+```
+
+2. Create a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Create uploads directory:
+```bash
+mkdir uploads
+```
+
+## Usage
+
+### Start the Flask Application
+
+```bash
+python app.py
+```
+
+The application will be available at `http://localhost:5000`
+
+### Web Interface
+
+1. Open your browser and navigate to `http://localhost:5000`
+2. Select a file (image, PDF, or DOCX)
+3. Click "Extract Text" to process the file
+4. View the extracted text in JSON format
+
+### API Endpoints
+
+#### Extract Text from File
+- **URL**: `/extract`
+- **Method**: `POST`
+- **Content-Type**: `multipart/form-data`
+- **Parameters**: 
+  - `file`: The file to extract text from
+
+**Example using curl:**
+```bash
+curl -X POST -F "file=@sample.pdf" http://localhost:5000/extract
+```
+
+#### Health Check
+- **URL**: `/health`
+- **Method**: `GET`
+- **Response**: Server health status
+
+## Supported File Formats
+
+- **Images**: PNG, JPG, JPEG, GIF, BMP, TIFF
+- **Documents**: PDF, DOCX
+- **Text**: TXT
+
+## File Size Limits
+
+- Maximum file size: 16MB
+- This can be configured in `app.py` by modifying `MAX_CONTENT_LENGTH`
+
+## Configuration
+
+Key configuration options in `app.py`:
+
+- `UPLOAD_FOLDER`: Directory for temporary file storage
+- `MAX_CONTENT_LENGTH`: Maximum allowed file size
+- `ALLOWED_EXTENSIONS`: Supported file extensions
+
+## Error Handling
+
+The application includes error handling for:
+- Unsupported file types
+- File processing errors
+- Missing files
+- Server errors
+
+## Development
+
+### Project Structure
+```
+extract-text-from-x/
+├── app.py                 # Flask application
+├── text_extractors.py     # Text extraction functions
+├── requirements.txt       # Python dependencies
+├── uploads/              # Temporary file storage
+└── README.md             # This file
+```
+
+### Adding New File Types
+
+To add support for new file types:
+
+1. Add the extension to `ALLOWED_EXTENSIONS` in `app.py`
+2. Create a new extraction function in `text_extractors.py`
+3. Add the logic to handle the new file type in the `/extract` route
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Tesseract not found**: Ensure Tesseract OCR is properly installed and in your PATH
+2. **Permission errors**: Check that the uploads directory has proper write permissions
+3. **Memory issues**: Large files may cause memory issues; consider implementing streaming for large files
+
+### Debug Mode
+
+The application runs in debug mode by default. To disable:
+```python
+app.run(debug=False)
+```
+
+## Security Considerations
+
+- The application uses a development secret key
+- File uploads are not extensively validated
+- Consider implementing authentication for production use
+- Implement proper file type validation beyond extensions
+
+## License
+
+This project is for educational/testing purposes.
+
+
+================================================
+File: app.py
+================================================
+
+from flask import Flask, request, jsonify, render_template_string
+import os
+from werkzeug.utils import secure_filename
+from text_extractors import extract_text_from_image, extract_text_from_pdf, extract_text_from_docx, extract_text_from_txt, get_file_type
+
+
+app = Flask(__name__)
+
+
+# Configuration
+app.config['UPLOAD_FOLDER'] = 'uploads/'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['SECRET_KEY'] = 'dev_key_not_secure'  # Bug: insecure secret key
+
+# Allowed file extensions
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'docx', 'txt'}
+
+def allowed_file(filename):
+    # Fixed logic to check if extension is IN allowed extensions
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@app.route('/')
+def index():
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Text Extractor</title>
+    </head>
+    <body>
+        <h1>Extract Text from Files</h1>
+        <form method="post" action="/extract" enctype="multipart/form-data">
+            <input type="file" name="file" required>
+            <button type="submit">Extract Text</button>
+        </form>
+    </body>
+    </html>
+    """
+    return render_template_string(html_template)
+
+
+@app.route('/extract', methods=['POST'])
+def extract_text():
+    # Check if file part exists in request
+    if 'file' not in request.files:
+        return jsonify({'filename': '', 'extracted_text': '', 'error': 'No file part in the request'}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({'filename': '', 'extracted_text': '', 'error': 'No file selected'}), 400
+    
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        
+        # Create upload folder if it doesn't exist
+        if not os.path.exists(app.config['UPLOAD_FOLDER']):
+            os.makedirs(app.config['UPLOAD_FOLDER'])
+        
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        try:
+            file_extension = filename.rsplit('.', 1)[1].lower()
+            extracted_text = ''
+            
+            if file_extension in ['png', 'jpg', 'jpeg', 'gif']:
+                extracted_text = extract_text_from_image(filepath)
+            elif file_extension == 'pdf':
+                extracted_text = extract_text_from_pdf(filepath)
+            elif file_extension == 'docx':
+                # Fixed: Correctly assign the return value
+                extracted_text = extract_text_from_docx(filepath)
+            elif file_extension == 'txt':
+                extracted_text = extract_text_from_txt(filepath)
+            else:
+                return jsonify({'filename': filename, 'extracted_text': '', 'error': 'Unsupported file type'}), 400
+            
+            return jsonify({
+                'filename': filename,
+                'extracted_text': extracted_text,
+                'error': None
+            }), 200
+            
+        except ValueError as ve:
+            # Specific handling for ValueError (including corrupted DOCX files)
+            return jsonify({'filename': filename, 'extracted_text': '', 'error': str(ve)}), 500
+        except Exception as e:
+            # Generic error handling
+            return jsonify({'filename': filename, 'extracted_text': '', 'error': f'Error processing file: {str(e)}'}), 500
+        finally:
+            # Ensure file cleanup in all scenarios
+            if os.path.exists(filepath):
+                os.remove(filepath)
+    
+    else:
+        return jsonify({'filename': file.filename if file else '', 'extracted_text': '', 'error': 'File type not allowed'}), 400
+
+
+@app.route('/health')
+def health_check():
+    # Bug: Undefined variable
+    status = server_status
+    return jsonify({'status': status})
+
+
+if __name__ == '__main__':
+    # Create uploads folder if it doesn't exist
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'])
+    
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
+
+
+================================================
+File: requirements.txt
+================================================
+Flask==2.3.3
+Werkzeug==2.3.7
+pytesseract==0.3.10
+Pillow==10.0.1
+PyPDF2==3.0.1
+PyMuPDF==1.23.5
+python-docx==0.8.11
+requests==2.31.0
+
+
+
+================================================
+File: text_extractors.py
+================================================
+
+import pytesseract
+from PIL import Image
+import PyPDF2
+import fitz  # PyMuPDF
+from docx import Document
+from docx.opc.exceptions import PackageNotFoundError
+import os
+
+
+def extract_text_from_image(image_path):
+    """
+    Extract text from image using OCR (Tesseract)
+    """
+    try:
+        # Open image using PIL
+        image = Image.open(image_path)
+        
+        # Use pytesseract to extract text
+        extracted_text = pytesseract.image_to_string(image)
+        
+        return extracted_text.strip()
+    
+    except Exception as e:
+        raise Exception(f"Error extracting text from image: {str(e)}")
+
+def extract_text_from_pdf(pdf_path):
+    """
+    Extract text from PDF using PyMuPDF (fitz)
+    """
+    try:
+        text = ""
+        
+        # Open PDF document
+        pdf_document = fitz.open(pdf_path)
+        
+        # Iterate through pages
+        for page_num in range(len(pdf_document)):
+            page = pdf_document.load_page(page_num)
+            text += page.get_text()
+        
+        pdf_document.close()
+        return text.strip()
+    
+    except Exception as e:
+        # Fallback to PyPDF2
+        try:
+            text = ""
+            with open(pdf_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                
+                for page_num in range(len(pdf_reader.pages)):
+                    page = pdf_reader.pages[page_num]
+                    text += page.extract_text()
+            
+            return text.strip()
+            
+        except Exception as e2:
+            raise Exception(f"Error extracting text from PDF: {str(e2)}")
+
+
+def extract_text_from_docx(docx_path):
+    """
+    Extract text from DOCX file with enhanced error handling
+    """
+    try:
+        # Open document
+        doc = Document(docx_path)
+        
+        # Extract text from paragraphs
+        text = ""
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
+        
+        # Extract text from tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    text += cell.text + "\t"
+                text += "\n"
+        
+        return text.strip()
+    
+    except PackageNotFoundError:
+        # Specific handling for corrupted or malformed DOCX files
+        raise ValueError("Error processing file: The DOCX file is corrupted or invalid.")
+    
+    except Exception as e:
+        # Generic error handling for other exceptions
+        raise ValueError(f"An unexpected error occurred while processing the DOCX file: {str(e)}")
+
+
+def extract_text_from_txt(txt_path):
+    """
+    Extract text from plain text file
+    """
+    try:
+        with open(txt_path, 'r', encoding='utf-8') as file:
+            return file.read()
+    except UnicodeDecodeError:
+        # Try with different encoding
+        try:
+            with open(txt_path, 'r', encoding='latin-1') as file:
+                return file.read()
+        except Exception as e:
+            raise Exception(f"Error reading text file: {str(e)}")
+    except Exception as e:
+        raise Exception(f"Error extracting text from TXT: {str(e)}")
+
+def get_file_type(filename):
+    """
+    Get file type from filename
+    """
+    if '.' not in filename:
+        return None
+    
+    extension = filename.rsplit('.', 1)[1].lower()
+    
+    file_types = {
+        'png': 'image',
+        'jpg': 'image',
+        'jpeg': 'image',
+        'gif': 'image',
+        'bmp': 'image',
+        'tiff': 'image',
+        'pdf': 'pdf',
+        'docx': 'docx',
+        'txt': 'txt'
+    }
+    
+    return file_types.get(extension, 'unknown')
+
+
+================================================
+File: .appmodconfig
+================================================
+
+
+
+================================================
+File: releasenotes/README.md
+================================================
+
+# Release Notes: Fix for DOCX Text Extraction
+
+## Summary
+This release fixes a critical bug where text content from `.docx` files was not being extracted and returned by the `/extract` endpoint. The issue was caused by a missing variable assignment, which led to a `500 Internal Server Error`.
+
+## Changes
+- **Bug Fix:** Corrected the logic in `app.py` to properly assign the output of `extract_text_from_docx` to the `extracted_text` variable.
+- **Enhanced Error Handling:** Improved the `extract_text_from_docx` function in `text_extractors.py` to specifically catch errors related to corrupted or invalid DOCX files, returning a more informative error message.
+- **API Response:** The API now correctly returns a `200 OK` with the extracted text for valid DOCX files and a `500 Internal Server Error` for corrupted files, as per the acceptance criteria.
+
+## Technical Details
+
+### DOCX Extraction Logic Fix
+The bug was fixed by properly assigning the return value from the `extract_text_from_docx` function to the `extracted_text` variable in the `/extract` endpoint:
+
+```python
+# Before
+elif file_extension == 'docx':
+    # Bug: Missing variable assignment
+    extract_text_from_docx(filepath)
+
+# After
+elif file_extension == 'docx':
+    # Fixed: Correctly assign the return value
+    extracted_text = extract_text_from_docx(filepath)
+```
+
+### Error Handling Enhancement
+The `extract_text_from_docx` function was enhanced to catch specific exceptions related to corrupted DOCX files:
+
+```python
+try:
+    doc = Document(docx_path)
+    # ... extraction logic ...
+    return text.strip()
+except PackageNotFoundError:
+    # Specific handling for corrupted or malformed DOCX files
+    raise ValueError("Error processing file: The DOCX file is corrupted or invalid.")
+except Exception as e:
+    # Generic error handling for other exceptions
+    raise ValueError(f"An unexpected error occurred while processing the DOCX file: {str(e)}")
+```
+
+### API Response Improvement
+The `/extract` endpoint was updated to catch and handle these specific exceptions:
+
+```python
+try:
+    # ... extraction logic ...
+except ValueError as ve:
+    # Specific handling for ValueError (including corrupted DOCX files)
+    return jsonify({'filename': filename, 'extracted_text': '', 'error': str(ve)}), 500
+except Exception as e:
+    # Generic error handling
+    return jsonify({'filename': filename, 'extracted_text': '', 'error': f'Error processing file: {str(e)}'}), 500
+```
+
+## Benefits
+- Improved reliability for DOCX text extraction
+- Better error messages for troubleshooting
+- Consistent API response structure
+- Enhanced system stability when processing invalid files
+
+
